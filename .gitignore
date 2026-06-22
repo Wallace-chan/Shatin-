@@ -1,0 +1,15 @@
+# 环境与密钥
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 系统
+.DS_Store
+
+# 生成文案（从 Actions Artifacts 或本地 output/ 获取）
+output/
