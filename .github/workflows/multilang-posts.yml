@@ -1,0 +1,63 @@
+# 每天 HKT 08:10、12:10、18:10：普通话 / English / Urdu 帖文
+name: Shatin multilang posts
+
+on:
+  schedule:
+    - cron: "10 0 * * *"
+    - cron: "10 4 * * *"
+    - cron: "10 10 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: shatin-multilang-posts-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests openai
+
+      - name: Generate multilang posts
+        run: python generate_multilang_posts.py
+
+      - name: Commit state (schedule only)
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/multilang_state.json
+          if git diff --staged --quiet; then
+            echo "No multilang_state.json changes."
+          else
+            git commit -m "chore: update multilang post state [skip ci]"
+          fi
+          for attempt in 1 2 3; do
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}" && break
+            sleep 10
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shatin-multilang-${{ github.run_number }}-${{ github.event_name }}
+          path: output/
+          if-no-files-found: error
+          retention-days: 30
