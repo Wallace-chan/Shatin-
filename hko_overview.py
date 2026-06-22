@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -17,8 +17,16 @@ from shatin_weather import REQUEST_TIMEOUT, _find_place, _retry
 
 OPEN_DATA_URL = "https://data.weather.gov.hk/weatherAPI/opendata/weather.php"
 
-# 官网首页「HKO」实况以天文台总部为代表
-HKO_HQ_PLACE = "香港天文台"
+# 官网首页「HKO」实况以天文台总部为代表（多语言 API 地名不同）
+HKO_HQ_PLACES = ("香港天文台", "Hong Kong Observatory")
+
+
+def _find_hko_hq(data_list: List[dict]) -> Optional[dict]:
+    for place in HKO_HQ_PLACES:
+        item = _find_place(data_list, place)
+        if item:
+            return item
+    return None
 
 WARNING_TYPE_LABELS = {
     "WRAIN": "暴雨警告",
@@ -64,8 +72,8 @@ def get_hko_overview(lang: str = "tc") -> Dict[str, Any]:
     flw = _fetch_json({"dataType": "flw", "lang": lang})
     warnsum = _fetch_json({"dataType": "warnsum", "lang": lang})
 
-    hq_temp = _find_place(rhrread.get("temperature", {}).get("data", []), HKO_HQ_PLACE)
-    hq_humidity = _find_place(rhrread.get("humidity", {}).get("data", []), HKO_HQ_PLACE)
+    hq_temp = _find_hko_hq(rhrread.get("temperature", {}).get("data", []))
+    hq_humidity = _find_hko_hq(rhrread.get("humidity", {}).get("data", []))
 
     warnings: List[Dict[str, str]] = []
     for code, entry in (warnsum or {}).items():
@@ -92,7 +100,7 @@ def get_hko_overview(lang: str = "tc") -> Dict[str, Any]:
         "api_source": OPEN_DATA_URL,
         "update_time": rhrread.get("updateTime"),
         "hko_hq": {
-            "place": HKO_HQ_PLACE,
+            "place": (hq_temp or hq_humidity or {}).get("place", HKO_HQ_PLACES[0]),
             "temperature": hq_temp.get("value") if hq_temp else None,
             "temperature_unit": (hq_temp or {}).get("unit", "C"),
             "humidity": hq_humidity.get("value") if hq_humidity else None,

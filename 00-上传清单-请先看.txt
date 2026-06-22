@@ -1,0 +1,174 @@
+══════════════════════════════════════════════════════════════
+  GitHub 上传包 · 沙田天气三程序（完整清单）
+  目标仓库示例：Wallace-chan/Shatin-
+══════════════════════════════════════════════════════════════
+
+【怎么上传】
+  1. 用 Wallace-chan 账号登录 GitHub，打开你的仓库
+  2. Add file → Upload files
+  3. 把本文件夹「GitHub上传包-沙田三程序」里的**全部内容**拖进去
+     （所有 .py、requirements.txt、data 文件夹、.github 文件夹）
+  4. Mac 须按 Cmd + Shift + . 才能看到隐藏的 .github 文件夹
+  5. Commit message 可填：Add Shatin weather three post programs
+  6. Commit changes
+
+  ⚠️ 仓库根目录结构应是平的，例如：
+     你的仓库/generate_social_posts.py
+     你的仓库/shatin_weather.py
+     你的仓库/.github/workflows/social-posts.yml
+     不要多包一层「GitHub上传包-沙田三程序」文件夹再上传。
+
+══════════════════════════════════════════════════════════════
+一、共用模块（三个程序都依赖，只上传一份）
+══════════════════════════════════════════════════════════════
+  □ shatin_weather.py      沙田自动气象站数据（HKO 开放数据）
+  □ hko_overview.py        天文台全港概况（警告、预报）
+  □ deepseek_utils.py      DeepSeek API（可选；无 Key 用本地模板）
+  □ shatin_events.py       沙田官方活动（文化博物馆 / 大会堂 / 节目表）
+  □ requirements.txt       Python 依赖
+  □ .gitignore             忽略 output/、.env 等
+
+══════════════════════════════════════════════════════════════
+二、程序 1 · 社交帖文 + 配图（小红书 / IG / FB 同一篇）
+══════════════════════════════════════════════════════════════
+  主程序：
+  □ generate_social_posts.py
+
+  配图相关：
+  □ image_utils.py
+  □ social_image_styles.py
+  □ poster_compose.py
+
+  状态文件：
+  □ data/social_state.json
+
+  本地测试：
+    python generate_social_posts.py
+    输出：output/post_*_social.txt、output/images/*.png
+
+  GitHub Actions：
+  □ .github/workflows/social-posts.yml
+    定时：每天 HKT 08:00、12:00、18:00
+    产物：Artifacts → shatin-social-*
+
+══════════════════════════════════════════════════════════════
+三、程序 2 · 口语化粤语帖文
+══════════════════════════════════════════════════════════════
+  主程序：
+  □ generate_cantonese_posts.py
+
+  文案模块：
+  □ cantonese_post.py
+
+  状态文件：
+  □ data/cantonese_state.json
+
+  本地测试：
+    python generate_cantonese_posts.py
+    输出：output/post_*_cantonese.txt
+
+  GitHub Actions：
+  □ .github/workflows/cantonese-posts.yml
+    定时：每天 HKT 08:05、12:05、18:05（略错开程序 1）
+    产物：Artifacts → shatin-cantonese-*
+
+══════════════════════════════════════════════════════════════
+四、程序 3 · 多语言帖文（普通话 / English / اردو）
+══════════════════════════════════════════════════════════════
+  主程序：
+  □ generate_multilang_posts.py
+
+  各语言模块：
+  □ multilang_common.py
+  □ multilang_post_zh.py
+  □ multilang_post_en.py
+  □ multilang_post_ur.py
+
+  状态文件：
+  □ data/multilang_state.json
+
+  本地测试：
+    python generate_multilang_posts.py
+    输出：output/post_*_zh.txt、post_*_en.txt、post_*_ur.txt
+
+  GitHub Actions：
+  □ .github/workflows/multilang-posts.yml
+    定时：每天 HKT 08:10、12:10、18:10
+    产物：Artifacts → shatin-multilang-*
+
+══════════════════════════════════════════════════════════════
+五、GitHub Actions 工作流（共 3 个，都在 .github/workflows/）
+══════════════════════════════════════════════════════════════
+  □ social-posts.yml       → 程序 1（含配图，最耗时）
+  □ cantonese-posts.yml    → 程序 2
+  □ multilang-posts.yml    → 程序 3
+
+  共用设置：
+  □ Settings → Secrets → DEEPSEEK_API_KEY（可选，不设则用免费模板）
+
+  手动 Run：
+  · 三个 workflow 都支持 Run workflow 即时测试
+  · 手动跑**不会**把 state 写回仓库，不影响定时三次排程
+
+══════════════════════════════════════════════════════════════
+六、文件总表（本包共 22 个上传项 + 说明文档）
+══════════════════════════════════════════════════════════════
+
+  类型              文件名
+  ─────────────────────────────────────────
+  共用              shatin_weather.py
+                    hko_overview.py
+                    deepseek_utils.py
+                    shatin_events.py
+                    requirements.txt
+                    .gitignore
+  程序1             generate_social_posts.py
+                    image_utils.py
+                    social_image_styles.py
+                    poster_compose.py
+  程序2             generate_cantonese_posts.py
+                    cantonese_post.py
+  程序3             generate_multilang_posts.py
+                    multilang_common.py
+                    multilang_post_zh.py
+                    multilang_post_en.py
+                    multilang_post_ur.py
+  数据              data/social_state.json
+                    data/cantonese_state.json
+                    data/multilang_state.json
+  Actions           .github/workflows/social-posts.yml
+                    .github/workflows/cantonese-posts.yml
+                    .github/workflows/multilang-posts.yml
+  说明              README.md
+                    00-上传清单-请先看.txt（本文件）
+
+══════════════════════════════════════════════════════════════
+七、上传后自检（在 GitHub 仓库里核对）
+══════════════════════════════════════════════════════════════
+  □ 根目录有 generate_social_posts.py
+  □ 根目录有 generate_cantonese_posts.py
+  □ 根目录有 generate_multilang_posts.py
+  □ 有 data/ 文件夹且内含 3 个 state.json
+  □ 有 .github/workflows/ 且内含 3 个 .yml
+  □ Actions 页能看到：
+      · Shatin social posts
+      · Shatin cantonese posts
+      · Shatin multilang posts
+  □ 可各点一次 Run workflow 试跑，在 Artifacts 下载 output/
+
+══════════════════════════════════════════════════════════════
+八、只想要部分程序时（可选）
+══════════════════════════════════════════════════════════════
+
+  只要程序 1（社交+图）：
+    上传「一、共用」+「二、程序1」+ social-posts.yml + social_state.json
+
+  只要程序 2（粤语口语）：
+    上传「一、共用」+「三、程序2」+ cantonese-posts.yml + cantonese_state.json
+
+  只要程序 3（多语言）：
+    上传「一、共用」+「四、程序3」+ multilang-posts.yml + multilang_state.json
+
+  建议：三个一起上传，共用模块只保留一份即可。
+
+══════════════════════════════════════════════════════════════

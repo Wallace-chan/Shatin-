@@ -1,0 +1,23 @@
+══════════════════════════════════════════════
+  快速步骤（三程序完整包）
+══════════════════════════════════════════════
+
+1. 登录 GitHub → 打开 Wallace-chan/Shatin-（或你的仓库）
+2. Add file → Upload files
+3. 选中本文件夹内**所有文件和文件夹**拖入：
+   · 全部 .py 文件
+   · requirements.txt、.gitignore、README.md
+   · data 文件夹（3 个 state.json）
+   · .github 文件夹（3 个 workflow）
+4. Mac：Cmd + Shift + . 显示 .github
+5. Commit changes
+
+详细分类清单 → 打开「00-上传清单-请先看.txt」
+
+上传后 Actions 会出现 3 个 workflow，每天各跑 3 遍（错开几分钟）。
+
+Secret（可选）：DEEPSEEK_API_KEY
+
+产物：Actions → 某次 run → Artifacts → 下载 output/
+
+══════════════════════════════════════════════

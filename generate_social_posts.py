@@ -17,7 +17,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from openai import APIConnectionError, APIError, RateLimitError
@@ -41,11 +41,18 @@ from shatin_weather import (
     print_weather,
     weather_fingerprint,
 )
+from shatin_events import append_events_section, format_events_facts, fetch_shatin_events
+
+try:
+    from image_utils import generate_all_social_images
+except ImportError:
+    generate_all_social_images = None  # type: ignore
 
 configure_stdio_utf8()
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "output"
+IMAGE_DIR = OUTPUT_DIR / "images"
 DATA_DIR = SCRIPT_DIR / "data"
 STATE_FILE = DATA_DIR / "social_state.json"
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
@@ -64,16 +71,40 @@ DEFAULT_HASHTAGS = (
 
 def _load_state() -> Dict[str, Any]:
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"last_hash": None}
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        state.setdefault("runs", {})
+        return state
+    return {"last_hash": None, "runs": {}}
 
 
-def _save_state(state: Dict[str, Any]) -> None:
+def _save_state(state: Dict[str, Any], *, persist: bool = True) -> None:
+    if not persist:
+        return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(
         json.dumps(state, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def _run_slot(now: datetime) -> str:
+    """定时三次：morning/noon/evening；手动 Run 单独记为 manual，不占用排程 slot。"""
+    event = os.environ.get("GITHUB_EVENT_NAME", "local")
+    if event == "workflow_dispatch":
+        return "manual"
+    hour = now.hour
+    if hour < 10:
+        return "morning"
+    if hour < 16:
+        return "noon"
+    return "evening"
+
+
+def _should_persist_state() -> bool:
+    """GitHub Actions 手动 Run 不写回仓库 state（与 workflow 中 schedule-only commit 一致）。"""
+    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        return False
+    return True
 
 
 def _content_hash(text: str) -> str:
@@ -131,10 +162,18 @@ def _build_prompt(
     overview: Dict[str, Any],
     overview_analysis: Dict[str, Any],
     hashtag_line: str,
+    events: Optional[Dict[str, Any]] = None,
 ) -> str:
     shatin_facts = format_weather_facts(weather)
     hk_facts = format_overview_facts(overview)
     ctx = _run_context(weather, overview)
+    events_block = format_events_facts(events, "tc") if events else ""
+    events_rule = ""
+    if events_block:
+        events_rule = f"""
+6. 若下方有沙田官方活動資料，在【提示】之後增加【沙田活動】板塊（今日/本週/本月各 1–2 條），勿編造未列出節目
+
+{events_block}"""
 
     return f"""你係香港沙田區天氣內容編輯。根據天文台即時數據撰寫**一篇**社交帖文，
 同時用於小紅書、Instagram、Facebook（三平台正文完全相同，含 hashtag）。
@@ -161,7 +200,7 @@ def _build_prompt(
 3. 末行 hashtag（必須原樣包含，可微調順序但不可刪除核心標籤）：
 {hashtag_line}
 4. 只根據上述數據；勿編造未給出嘅預報
-5. 只輸出可直接發佈嘅正文，不要「好的」「以下是」"""
+5. 只輸出可直接發佈嘅正文，不要「好的」「以下是」{events_rule}"""
 
 
 def _validate(content: str, hashtag_line: str) -> str:
@@ -188,12 +227,14 @@ def _template_content(
     overview: Dict[str, Any],
     overview_analysis: Dict[str, Any],
     hashtag_line: str,
+    events: Optional[Dict[str, Any]] = None,
 ) -> str:
     now = datetime.now(HK_TZ)
     date_str = now.strftime("%Y年%m月%d日")
     t, rh = weather["air_temperature"], weather["relative_humidity"]
     rain, wind = weather["total_rainfall"], weather["wind_speed"]
     direction = weather["wind_direction"]
+    wind_label = direction if direction.endswith("風") else f"{direction}風"
     gust = weather.get("wind_gust", "—")
 
     hq = overview["hko_hq"]
@@ -218,10 +259,12 @@ def _template_content(
         f"{forecast_short}\n\n"
         f"【沙田】自動氣象站實況\n"
         f"氣溫 {t}°C｜濕度 {rh}%｜過去一個鐘雨量 {rain} mm\n"
-        f"{direction}風 {wind} km/h｜陣風 {gust} km/h\n\n"
+        f"{wind_label} {wind} km/h｜陣風 {gust} km/h\n\n"
         f"【提示】{advice}\n\n"
         f"{hashtag_line}"
     )
+    if events:
+        body = append_events_section(body, events, "tc")
     return _validate(body, hashtag_line)
 
 
@@ -231,10 +274,12 @@ def generate_unified_post(
     overview: Dict[str, Any],
     overview_analysis: Dict[str, Any],
     state: Dict[str, Any],
+    events: Optional[Dict[str, Any]] = None,
 ) -> str:
     hashtag_line = _build_hashtag_line(overview, shatin_analysis)
+    events = events if events is not None else fetch_shatin_events()
     prompt = _build_prompt(
-        weather, shatin_analysis, overview, overview_analysis, hashtag_line
+        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events
     )
 
     if has_deepseek_api_key():
@@ -253,6 +298,8 @@ def generate_unified_post(
                     ),
                     hashtag_line,
                 )
+                if events:
+                    text = append_events_section(text, events, "tc")
                 return text
             except (ValueError, APIError, APIConnectionError, RateLimitError) as e:
                 if attempt == 1:
@@ -265,30 +312,57 @@ def generate_unified_post(
                         print(f"⚠️ {e}，改用模板", file=sys.stderr)
                     break
     return _template_content(
-        weather, shatin_analysis, overview, overview_analysis, hashtag_line
+        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events
     )
 
 
-def _save_outputs(content: str, stamp: str) -> None:
+def _save_output(content: str, stamp: str) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    paths = {
-        "unified": OUTPUT_DIR / f"post_{stamp}_social_unified.txt",
-    }
-    for platform in PLATFORMS:
-        paths[platform] = OUTPUT_DIR / f"post_{stamp}_{platform}.txt"
+    path = OUTPUT_DIR / f"post_{stamp}_social.txt"
+    path.write_text(content, encoding="utf-8")
+    print(f"✅ 已保存: output/{path.name}")
+    return path
 
-    for key, path in paths.items():
-        path.write_text(content, encoding="utf-8")
-        label = PLATFORM_LABELS.get(key, "统一帖文")
-        if key == "unified":
-            label = "三平台统一帖文"
-        print(f"✅ 已保存: output/{path.name}  ({label})")
+
+def _generate_social_images(
+    weather: Dict[str, Any],
+    shatin_analysis: Dict[str, Any],
+    overview: Dict[str, Any],
+    stamp: str,
+) -> List[Dict[str, Any]]:
+    if os.environ.get("SKIP_IMAGES", "").strip().lower() in ("1", "true", "yes"):
+        print("⏭️  已跳过配图（SKIP_IMAGES=1）")
+        return []
+    if generate_all_social_images is None:
+        print("⚠️  image_utils 不可用，跳过配图", file=sys.stderr)
+        return []
+
+    from social_image_styles import SOCIAL_IMAGE_STYLES, parse_social_style_list
+
+    style_list = parse_social_style_list()
+    labels = [SOCIAL_IMAGE_STYLES[s][0] for s in style_list]
+    print(f"\n🖼️  正在生成配图（{len(style_list)} 种风格：{'、'.join(labels)}）…")
+    print("   引擎：Pollinations 免费底图 + Pillow 海报拼版；国画/卡通可选 OpenAI DALL·E 3")
+
+    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    results = generate_all_social_images(
+        weather, shatin_analysis, IMAGE_DIR, stamp, overview=overview
+    )
+    for item in results:
+        if item.get("error"):
+            print(f"⚠️  {item.get('label')}: {item['error']}", file=sys.stderr)
+        else:
+            print(
+                f"✅ {item['label']}: output/{item['file']}（{item['provider']}）"
+            )
+    return [r for r in results if not r.get("error")]
 
 
 def main() -> int:
     print("正在拉取天气数据…")
     print("  · 沙田自动气象站（分区 CSV + rhrread）")
-    print("  · 全港概况（rhrread + flw + warnsum，同源 HKO 官网）\n")
+    print("  · 全港概况（rhrread + flw + warnsum，同源 HKO 官网）")
+    print("  · 沙田活动（文化博物馆 / 沙田大会堂 / 康文署节目表）\n")
 
     try:
         weather = get_shatin_weather()
@@ -308,40 +382,66 @@ def main() -> int:
     if not has_deepseek_api_key():
         print("⚠️  未设置 DEEPSEEK_API_KEY，使用本地模板生成\n")
 
+    events = fetch_shatin_events()
+    if not events.get("skipped"):
+        n = sum(len(events.get(k) or []) for k in ("today", "week", "month", "notices"))
+        print(f"📅 沙田活动：抓取到 {n} 条官方信息\n")
+
     state = _load_state()
     stamp = datetime.now(HK_TZ).strftime("%Y-%m-%d_%H%M")
 
     print("🤖 正在生成 小红书 / Instagram / Facebook 统一帖文…")
     content = generate_unified_post(
-        weather, shatin_analysis, overview, overview_analysis, state
+        weather, shatin_analysis, overview, overview_analysis, state, events
     )
 
     h = _content_hash(content)
-    if state.get("last_hash") == h:
+    now = datetime.now(HK_TZ)
+    slot = _run_slot(now)
+    slot_key = f"{now:%Y-%m-%d}_{slot}"
+    prev_hash = (state.get("runs") or {}).get(slot_key, {}).get("hash")
+    if prev_hash == h:
+        print(f"⚠️  与本次排程 slot（{slot_key}）上次 hash 相同", file=sys.stderr)
+    elif state.get("last_hash") == h:
         print("⚠️  与上次生成内容 hash 相同", file=sys.stderr)
 
-    _save_outputs(content, stamp)
+    _save_output(content, stamp)
+    state.setdefault("runs", {})[slot_key] = {
+        "hash": h,
+        "at": now.isoformat(),
+        "trigger": os.environ.get("GITHUB_EVENT_NAME", "local"),
+        "stamp": stamp,
+    }
     state["last_hash"] = h
-    _save_state(state)
+    persist = _should_persist_state()
+    if not persist:
+        print("ℹ️  手动 Run：已生成帖文，但不更新仓库内 data/social_state.json", file=sys.stderr)
+    _save_state(state, persist=persist)
+
+    image_list = _generate_social_images(
+        weather, shatin_analysis, overview, stamp
+    )
 
     manifest = {
         "generated_at_hkt": datetime.now(HK_TZ).isoformat(),
         "platforms": list(PLATFORMS),
         "unified": True,
+        "post_file": f"post_{stamp}_social.txt",
         "weather_fingerprint": weather_fingerprint(weather),
         "warnings": [w["label"] for w in overview.get("warnings", [])],
         "stamp": stamp,
         "hko_source": "https://www.hko.gov.hk/tc/index.html",
+        "images": image_list,
     }
     (OUTPUT_DIR / "latest_social_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 
-    print(f"\n--- 统一帖文（{PLATFORM_LABELS['xiaohongshu']} / "
-          f"{PLATFORM_LABELS['instagram']} / {PLATFORM_LABELS['facebook']}）---\n")
+    print(f"\n--- 社交帖文 ---\n")
     print(content)
-    print(f"\n🎉 已生成 1 篇统一帖文，并保存为 {len(PLATFORMS) + 1} 个文件（内容相同）")
+    img_note = f" + {len(image_list)} 张配图" if image_list else ""
+    print(f"\n🎉 已生成 1 篇帖文{img_note}")
     return 0
 
 

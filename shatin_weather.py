@@ -106,6 +106,20 @@ def _parse_int(value: str) -> int:
     return int(value.strip())
 
 
+def _parse_wind_speed(value: str) -> int:
+    text = value.strip()
+    if not text or text in ("無風", "无风", "-", "N/A"):
+        return 0
+    return int(text)
+
+
+def _parse_wind_gust(value: str) -> Optional[int]:
+    text = value.strip()
+    if not text or text in ("無風", "无风", "-", "N/A"):
+        return None
+    return int(text)
+
+
 def get_shatin_weather() -> Dict[str, Any]:
     """获取沙田自动气象站实时数据；必填字段缺失时抛出 ValueError。"""
     weather: Dict[str, Any] = {
@@ -143,9 +157,9 @@ def get_shatin_weather() -> Dict[str, Any]:
     if len(values) >= 1 and values[0]:
         weather["wind_direction"] = values[0]
     if len(values) >= 2 and values[1]:
-        weather["wind_speed"] = _parse_int(values[1])
+        weather["wind_speed"] = _parse_wind_speed(values[1])
     if len(values) >= 3 and values[2]:
-        weather["wind_gust"] = _parse_int(values[2])
+        weather["wind_gust"] = _parse_wind_gust(values[2])
     weather["data_sources"]["wind"] = REGIONAL_WIND_URL
     weather["record_times"]["wind"] = _format_csv_time(wind_row["record_time"])
 
