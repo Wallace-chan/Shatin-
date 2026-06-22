@@ -8,19 +8,25 @@ on:
     - cron: "0 10 * * *"  # 18:00 HKT
   workflow_dispatch:
 
+concurrency:
+  group: shatin-social-posts-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     env:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,23 +34,41 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests openai
+        run: pip install requests openai Pillow
+
+      - name: Install Chinese fonts for image caption
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
 
       - name: Generate social posts
+        env:
+          IMAGE_PROVIDER: pollinations
+          IMAGE_MODEL: flux
+          IMAGE_SIZE: "1536"
         run: python generate_social_posts.py
 
-      - name: Commit state (去重 hash)
+      - name: Commit state (schedule only)
+        if: github.event_name == 'schedule'
+        continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/social_state.json
-          git diff --staged --quiet || git commit -m "chore: update social post state [skip ci]"
-          git push
+          if git diff --staged --quiet; then
+            echo "No social_state.json changes to commit."
+          else
+            git commit -m "chore: update social post state [skip ci]"
+          fi
+          for attempt in 1 2 3; do
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}" && break
+            echo "git push failed (attempt ${attempt}), retrying in 10s..."
+            sleep 10
+          done
 
       - name: Upload posts
         uses: actions/upload-artifact@v4
         with:
-          name: shatin-social-${{ github.run_number }}
+          name: shatin-social-${{ github.run_number }}-${{ github.event_name }}
           path: output/
           if-no-files-found: error
           retention-days: 30
