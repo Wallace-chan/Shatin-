@@ -17,6 +17,7 @@ from multilang_common import (
     source_line,
     wind_label,
 )
+from shatin_culture import append_culture_section, format_culture_facts, fetch_culture_context
 from shatin_events import append_events_section, format_events_facts, fetch_shatin_events
 
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
@@ -30,13 +31,20 @@ def build_prompt(
     overview_analysis: Dict[str, Any],
     hashtag_line: str,
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     events_block = format_events_facts(events, LANG) if events else ""
+    culture_block = format_culture_facts(culture, LANG) if culture else ""
     events_rule = ""
     if events_block:
         events_rule = f"""
 7. اگر نیچے شا ٹن سرگرمیاں درج ہیں تو موسم کے بعد 【شا ٹن سرگرمیاں】 بلاک شامل کریں
 {events_block}"""
+    culture_rule = ""
+    if culture_block:
+        culture_rule = f"""
+8. اگر نیچے ثقافتی/موسمی نوٹ ہیں تو ایک جملہ قدرتی طور پر شامل کریں اور 【شا ٹن ثقافت و موسم】 بلاک (2–3 نکات) شامل کریں
+{culture_block}"""
     return f"""آپ ہانگ کانگ رصدگاہ کے مواصلاتی مصنف ہیں۔ **اردو** میں **ایک** سوشل میڈیا پوسٹ لکھیں
 (小红书 / Instagram / Facebook — ایک ہی متن)۔
 
@@ -55,7 +63,7 @@ def build_prompt(
 3. آخری سطر hashtag: {hashtag_line}
 4. ماخذ: {source_line(LANG)}
 5. صرف دیے گئے اعداد استعمال کریں
-6. صرف شائع ہونے والا متن لکھیں{events_rule}
+6. صرف شائع ہونے والا متن لکھیں{events_rule}{culture_rule}
 
 {CULTURAL_POLICY}"""
 
@@ -82,6 +90,7 @@ def template_post(
     overview_analysis: Dict[str, Any],
     hashtag_line: str,
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     now = datetime.now(HK_TZ)
     date_str = now.strftime("%d %B %Y")
@@ -116,6 +125,8 @@ def template_post(
     )
     if events:
         body = append_events_section(body, events, LANG)
+    if culture:
+        body = append_culture_section(body, culture, LANG)
     return validate_post(body, hashtag_line)
 
 
@@ -125,6 +136,7 @@ def generate_urdu_post(
     shatin_analysis: Optional[Dict[str, Any]] = None,
     overview_analysis: Optional[Dict[str, Any]] = None,
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     from hko_overview import summarize_overview
     from shatin_weather import analyze_weather
@@ -132,9 +144,10 @@ def generate_urdu_post(
     shatin_analysis = shatin_analysis or analyze_weather(weather)
     overview_analysis = overview_analysis or summarize_overview(overview)
     events = events if events is not None else fetch_shatin_events()
+    culture = culture if culture is not None else fetch_culture_context(weather, overview)
     hashtag_line = default_hashtags(LANG, overview)
     prompt = build_prompt(
-        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events
+        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events, culture
     )
 
     if has_deepseek_api_key():
@@ -153,11 +166,13 @@ def generate_urdu_post(
                 )
                 if events:
                     text = append_events_section(text, events, LANG)
+                if culture:
+                    text = append_culture_section(text, culture, LANG)
                 return text
             except (ValueError, APIError, APIConnectionError, RateLimitError):
                 if attempt == 1:
                     break
 
     return template_post(
-        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events
+        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events, culture
     )

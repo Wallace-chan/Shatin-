@@ -23,6 +23,7 @@ from hko_overview import get_hko_overview, print_overview, summarize_overview
 from multilang_post_en import generate_english_post
 from multilang_post_ur import generate_urdu_post
 from multilang_post_zh import generate_mandarin_post
+from shatin_culture import fetch_culture_context
 from shatin_events import fetch_shatin_events
 from shatin_weather import analyze_weather, get_shatin_weather, print_weather, weather_fingerprint
 
@@ -95,6 +96,10 @@ def main() -> int:
         n = sum(len(events.get(k) or []) for k in ("today", "week", "month", "notices"))
         print(f"📅 沙田活动：抓取到 {n} 条官方信息\n")
 
+    culture = fetch_culture_context(weather, overview_display)
+    if not culture.get("skipped"):
+        print(f"📜 沙田文史：已载入 {len(culture.get('snippets') or [])} 条当月素材\n")
+
     state = _load_state()
     stamp = datetime.now(HK_TZ).strftime("%Y-%m-%d_%H%M")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -106,7 +111,7 @@ def main() -> int:
             overview = _fetch_overview_for_lang(code)
             overview_analysis = summarize_overview(overview)
             content = generator(
-                weather, overview, shatin_analysis, overview_analysis, events
+                weather, overview, shatin_analysis, overview_analysis, events, culture
             )
             path = OUTPUT_DIR / f"post_{stamp}_{code}.txt"
             path.write_text(content, encoding="utf-8")

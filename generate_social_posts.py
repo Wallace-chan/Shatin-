@@ -41,18 +41,13 @@ from shatin_weather import (
     print_weather,
     weather_fingerprint,
 )
+from shatin_culture import append_culture_section, format_culture_facts, fetch_culture_context
 from shatin_events import append_events_section, format_events_facts, fetch_shatin_events
-
-try:
-    from image_utils import generate_all_social_images
-except ImportError:
-    generate_all_social_images = None  # type: ignore
 
 configure_stdio_utf8()
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "output"
-IMAGE_DIR = OUTPUT_DIR / "images"
 DATA_DIR = SCRIPT_DIR / "data"
 STATE_FILE = DATA_DIR / "social_state.json"
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
@@ -87,17 +82,28 @@ def _save_state(state: Dict[str, Any], *, persist: bool = True) -> None:
     )
 
 
+SLOT_HKT_TIMES = {"morning": (8, 0), "noon": (12, 0), "evening": (18, 0)}
+
+
 def _run_slot(now: datetime) -> str:
     """定时三次：morning/noon/evening；手动 Run 单独记为 manual，不占用排程 slot。"""
     event = os.environ.get("GITHUB_EVENT_NAME", "local")
     if event == "workflow_dispatch":
         return "manual"
     hour = now.hour
-    if hour < 10:
+    if hour < 11:
         return "morning"
-    if hour < 16:
+    if hour < 17:
         return "noon"
     return "evening"
+
+
+def _slot_record_time(now: datetime, slot: str) -> datetime:
+    """排程任務用設定的 HKT 發佈時間（08:00 / 12:00 / 18:00）記錄 state。"""
+    if slot == "manual":
+        return now
+    hour, minute = SLOT_HKT_TIMES[slot]
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
 def _should_persist_state() -> bool:
@@ -163,17 +169,25 @@ def _build_prompt(
     overview_analysis: Dict[str, Any],
     hashtag_line: str,
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     shatin_facts = format_weather_facts(weather)
     hk_facts = format_overview_facts(overview)
     ctx = _run_context(weather, overview)
     events_block = format_events_facts(events, "tc") if events else ""
+    culture_block = format_culture_facts(culture, "tc") if culture else ""
     events_rule = ""
     if events_block:
         events_rule = f"""
 6. 若下方有沙田官方活動資料，在【提示】之後增加【沙田活動】板塊（今日/本週/本月各 1–2 條），勿編造未列出節目
 
 {events_block}"""
+    culture_rule = ""
+    if culture_block:
+        culture_rule = f"""
+7. 若下方有沙田文史／月令資料，在【提示】後可自然穿插 1 句，並增加【沙田文史】板塊（2–3 條），勿編造未載內容
+
+{culture_block}"""
 
     return f"""你係香港沙田區天氣內容編輯。根據天文台即時數據撰寫**一篇**社交帖文，
 同時用於小紅書、Instagram、Facebook（三平台正文完全相同，含 hashtag）。
@@ -200,7 +214,7 @@ def _build_prompt(
 3. 末行 hashtag（必須原樣包含，可微調順序但不可刪除核心標籤）：
 {hashtag_line}
 4. 只根據上述數據；勿編造未給出嘅預報
-5. 只輸出可直接發佈嘅正文，不要「好的」「以下是」{events_rule}"""
+5. 只輸出可直接發佈嘅正文，不要「好的」「以下是」{events_rule}{culture_rule}"""
 
 
 def _validate(content: str, hashtag_line: str) -> str:
@@ -228,6 +242,7 @@ def _template_content(
     overview_analysis: Dict[str, Any],
     hashtag_line: str,
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     now = datetime.now(HK_TZ)
     date_str = now.strftime("%Y年%m月%d日")
@@ -265,6 +280,8 @@ def _template_content(
     )
     if events:
         body = append_events_section(body, events, "tc")
+    if culture:
+        body = append_culture_section(body, culture, "tc")
     return _validate(body, hashtag_line)
 
 
@@ -275,11 +292,13 @@ def generate_unified_post(
     overview_analysis: Dict[str, Any],
     state: Dict[str, Any],
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     hashtag_line = _build_hashtag_line(overview, shatin_analysis)
     events = events if events is not None else fetch_shatin_events()
+    culture = culture if culture is not None else fetch_culture_context(weather, overview)
     prompt = _build_prompt(
-        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events
+        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events, culture
     )
 
     if has_deepseek_api_key():
@@ -300,6 +319,8 @@ def generate_unified_post(
                 )
                 if events:
                     text = append_events_section(text, events, "tc")
+                if culture:
+                    text = append_culture_section(text, culture, "tc")
                 return text
             except (ValueError, APIError, APIConnectionError, RateLimitError) as e:
                 if attempt == 1:
@@ -312,7 +333,7 @@ def generate_unified_post(
                         print(f"⚠️ {e}，改用模板", file=sys.stderr)
                     break
     return _template_content(
-        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events
+        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events, culture
     )
 
 
@@ -324,45 +345,12 @@ def _save_output(content: str, stamp: str) -> Path:
     return path
 
 
-def _generate_social_images(
-    weather: Dict[str, Any],
-    shatin_analysis: Dict[str, Any],
-    overview: Dict[str, Any],
-    stamp: str,
-) -> List[Dict[str, Any]]:
-    if os.environ.get("SKIP_IMAGES", "").strip().lower() in ("1", "true", "yes"):
-        print("⏭️  已跳过配图（SKIP_IMAGES=1）")
-        return []
-    if generate_all_social_images is None:
-        print("⚠️  image_utils 不可用，跳过配图", file=sys.stderr)
-        return []
-
-    from social_image_styles import SOCIAL_IMAGE_STYLES, parse_social_style_list
-
-    style_list = parse_social_style_list()
-    labels = [SOCIAL_IMAGE_STYLES[s][0] for s in style_list]
-    print(f"\n🖼️  正在生成配图（{len(style_list)} 种风格：{'、'.join(labels)}）…")
-    print("   引擎：Pollinations 免费底图 + Pillow 海报拼版；国画/卡通可选 OpenAI DALL·E 3")
-
-    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    results = generate_all_social_images(
-        weather, shatin_analysis, IMAGE_DIR, stamp, overview=overview
-    )
-    for item in results:
-        if item.get("error"):
-            print(f"⚠️  {item.get('label')}: {item['error']}", file=sys.stderr)
-        else:
-            print(
-                f"✅ {item['label']}: output/{item['file']}（{item['provider']}）"
-            )
-    return [r for r in results if not r.get("error")]
-
-
 def main() -> int:
     print("正在拉取天气数据…")
     print("  · 沙田自动气象站（分区 CSV + rhrread）")
     print("  · 全港概况（rhrread + flw + warnsum，同源 HKO 官网）")
-    print("  · 沙田活动（文化博物馆 / 沙田大会堂 / 康文署节目表）\n")
+    print("  · 沙田活动（文化博物馆 / 沙田大会堂 / 康文署节目表）")
+    print("  · 沙田文史（历史文化与天气气候资料 docx）\n")
 
     try:
         weather = get_shatin_weather()
@@ -387,18 +375,27 @@ def main() -> int:
         n = sum(len(events.get(k) or []) for k in ("today", "week", "month", "notices"))
         print(f"📅 沙田活动：抓取到 {n} 条官方信息\n")
 
+    culture = fetch_culture_context(weather, overview)
+    if not culture.get("skipped"):
+        print(f"📜 沙田文史：已载入 {len(culture.get('snippets') or [])} 条当月素材\n")
+
     state = _load_state()
-    stamp = datetime.now(HK_TZ).strftime("%Y-%m-%d_%H%M")
+    now = datetime.now(HK_TZ)
+    slot = _run_slot(now)
+    record_time = _slot_record_time(now, slot)
+    stamp = record_time.strftime("%Y-%m-%d_%H%M")
 
     print("🤖 正在生成 小红书 / Instagram / Facebook 统一帖文…")
     content = generate_unified_post(
-        weather, shatin_analysis, overview, overview_analysis, state, events
+        weather, shatin_analysis, overview, overview_analysis, state, events, culture
     )
 
     h = _content_hash(content)
     now = datetime.now(HK_TZ)
     slot = _run_slot(now)
     slot_key = f"{now:%Y-%m-%d}_{slot}"
+    record_time = _slot_record_time(now, slot)
+    stamp = record_time.strftime("%Y-%m-%d_%H%M")
     prev_hash = (state.get("runs") or {}).get(slot_key, {}).get("hash")
     if prev_hash == h:
         print(f"⚠️  与本次排程 slot（{slot_key}）上次 hash 相同", file=sys.stderr)
@@ -408,7 +405,7 @@ def main() -> int:
     _save_output(content, stamp)
     state.setdefault("runs", {})[slot_key] = {
         "hash": h,
-        "at": now.isoformat(),
+        "at": record_time.isoformat(),
         "trigger": os.environ.get("GITHUB_EVENT_NAME", "local"),
         "stamp": stamp,
     }
@@ -423,7 +420,7 @@ def main() -> int:
     )
 
     manifest = {
-        "generated_at_hkt": datetime.now(HK_TZ).isoformat(),
+        "generated_at_hkt": record_time.isoformat(),
         "platforms": list(PLATFORMS),
         "unified": True,
         "post_file": f"post_{stamp}_social.txt",
@@ -431,7 +428,6 @@ def main() -> int:
         "warnings": [w["label"] for w in overview.get("warnings", [])],
         "stamp": stamp,
         "hko_source": "https://www.hko.gov.hk/tc/index.html",
-        "images": image_list,
     }
     (OUTPUT_DIR / "latest_social_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -440,8 +436,7 @@ def main() -> int:
 
     print(f"\n--- 社交帖文 ---\n")
     print(content)
-    img_note = f" + {len(image_list)} 张配图" if image_list else ""
-    print(f"\n🎉 已生成 1 篇帖文{img_note}")
+    print(f"\n🎉 已生成 1 篇帖文")
     return 0
 
 

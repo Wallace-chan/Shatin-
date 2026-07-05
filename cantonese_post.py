@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from deepseek_utils import chat_completion, has_deepseek_api_key
 from hko_overview import format_overview_facts, summarize_overview
+from shatin_culture import append_culture_section, format_culture_facts, fetch_culture_context
 from shatin_events import append_events_section, format_events_facts, fetch_shatin_events
 from shatin_weather import analyze_weather, format_weather_facts, weather_fingerprint
 
@@ -162,14 +163,22 @@ def build_colloquial_prompt(
     overview_analysis: Dict[str, Any],
     hashtag_line: str,
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     events_block = format_events_facts(events, "tc") if events else ""
+    culture_block = format_culture_facts(culture, "tc") if culture else ""
     events_hint = ""
     if events_block:
         events_hint = f"""
 {events_block}
 
 8. 若上面有沙田活動資料，用 1–2 句口語順帶提及（唔好用【沙田活動】標題；可講「想行文化博物館」等），勿編造未列出嘅節目"""
+    culture_hint = ""
+    if culture_block:
+        culture_hint = f"""
+{culture_block}
+
+9. 若上面有沙田文史／月令資料，可自然穿插 1 句（如當月古書月令、余光中筆下山水意象），唔好用【沙田文史】標題；詳細板塊會另附"""
     return f"""你係香港沙田區天氣博主，用**粵語口語**寫一篇社交帖（小紅書 / Instagram / Facebook 共用）。
 
 { _run_context(weather, overview) }
@@ -192,7 +201,7 @@ def build_colloquial_prompt(
 4. 約 100–180 字（唔計 hashtag）；可加 2–3 個 emoji
 5. 數字只可以用上面提供嘅，唔好亂估
 6. 末行原樣包含 hashtag：{hashtag_line}
-7. 只輸出可直接發佈正文，唔好「好的」「以下係」{events_hint}"""
+7. 只輸出可直接發佈正文，唔好「好的」「以下係」{events_hint}{culture_hint}"""
 
 
 def validate_colloquial_post(content: str, hashtag_line: str) -> str:
@@ -231,6 +240,7 @@ def template_colloquial_post(
     overview_analysis: Dict[str, Any],
     hashtag_line: str,
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     """无 API Key 时的口语粤语模板。"""
     now = datetime.now(HK_TZ)
@@ -258,6 +268,8 @@ def template_colloquial_post(
     body += f"\n\n{advice}\n\n{hashtag_line}"
     if events:
         body = append_events_section(body, events, "tc")
+    if culture:
+        body = append_culture_section(body, culture, "tc")
     return validate_colloquial_post(body, hashtag_line)
 
 
@@ -267,15 +279,17 @@ def generate_colloquial_post(
     shatin_analysis: Optional[Dict[str, Any]] = None,
     overview_analysis: Optional[Dict[str, Any]] = None,
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     """生成一篇口语化粤语社交帖文。"""
     shatin_analysis = shatin_analysis or analyze_weather(weather)
     shatin_analysis = {**shatin_analysis, "_rain_mm": float(weather["total_rainfall"])}
     overview_analysis = overview_analysis or summarize_overview(overview)
     events = events if events is not None else fetch_shatin_events()
+    culture = culture if culture is not None else fetch_culture_context(weather, overview)
     hashtag_line = build_hashtag_line(overview, shatin_analysis)
     prompt = build_colloquial_prompt(
-        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events
+        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events, culture
     )
 
     if has_deepseek_api_key():
@@ -298,12 +312,14 @@ def generate_colloquial_post(
                 )
                 if events:
                     text = append_events_section(text, events, "tc")
+                if culture:
+                    text = append_culture_section(text, culture, "tc")
                 return text
             except (ValueError, APIError, APIConnectionError, RateLimitError):
                 if attempt == 1:
                     break
 
     text = template_colloquial_post(
-        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events
+        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events, culture
     )
     return text

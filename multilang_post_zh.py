@@ -16,6 +16,7 @@ from multilang_common import (
     run_context,
     source_line,
 )
+from shatin_culture import append_culture_section, format_culture_facts, fetch_culture_context
 from shatin_events import append_events_section, format_events_facts, fetch_shatin_events
 
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
@@ -29,13 +30,20 @@ def build_prompt(
     overview_analysis: Dict[str, Any],
     hashtag_line: str,
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     events_block = format_events_facts(events, LANG) if events else ""
+    culture_block = format_culture_facts(culture, LANG) if culture else ""
     events_rule = ""
     if events_block:
         events_rule = f"""
 8. 若上方有沙田活动资料，在天气内容后增加【沙田活动】板块（1–3 条），勿编造未列出的节目
 {events_block}"""
+    culture_rule = ""
+    if culture_block:
+        culture_rule = f"""
+9. 若上方有沙田文史／月令资料，在【提示】后可自然穿插 1 句，并增加【沙田文史】板块（2–3 条要点）
+{culture_block}"""
     return f"""你是香港天文台对外传播撰稿人。请用**普通话（简体字）**撰写一篇社交帖文，
 适用于小红书、Instagram、Facebook（三平台正文相同）。
 
@@ -55,7 +63,7 @@ def build_prompt(
 4. 末行 hashtag（须包含）：{hashtag_line}
 5. 倒数第二行注明：{source_line(LANG)}
 6. 只根据上述数据；勿编造预警
-7. 只输出可直接发布的正文{events_rule}
+7. 只输出可直接发布的正文{events_rule}{culture_rule}
 
 {CULTURAL_POLICY}"""
 
@@ -82,6 +90,7 @@ def template_post(
     overview_analysis: Dict[str, Any],
     hashtag_line: str,
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     now = datetime.now(HK_TZ)
     date_str = now.strftime("%Y年%m月%d日")
@@ -117,6 +126,8 @@ def template_post(
     )
     if events:
         body = append_events_section(body, events, LANG)
+    if culture:
+        body = append_culture_section(body, culture, LANG)
     return validate_post(body, hashtag_line)
 
 
@@ -126,6 +137,7 @@ def generate_mandarin_post(
     shatin_analysis: Optional[Dict[str, Any]] = None,
     overview_analysis: Optional[Dict[str, Any]] = None,
     events: Optional[Dict[str, Any]] = None,
+    culture: Optional[Dict[str, Any]] = None,
 ) -> str:
     from hko_overview import summarize_overview
     from shatin_weather import analyze_weather
@@ -133,9 +145,10 @@ def generate_mandarin_post(
     shatin_analysis = shatin_analysis or analyze_weather(weather)
     overview_analysis = overview_analysis or summarize_overview(overview)
     events = events if events is not None else fetch_shatin_events()
+    culture = culture if culture is not None else fetch_culture_context(weather, overview)
     hashtag_line = default_hashtags(LANG, overview)
     prompt = build_prompt(
-        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events
+        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events, culture
     )
 
     if has_deepseek_api_key():
@@ -154,11 +167,13 @@ def generate_mandarin_post(
                 )
                 if events:
                     text = append_events_section(text, events, LANG)
+                if culture:
+                    text = append_culture_section(text, culture, LANG)
                 return text
             except (ValueError, APIError, APIConnectionError, RateLimitError):
                 if attempt == 1:
                     break
 
     return template_post(
-        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events
+        weather, shatin_analysis, overview, overview_analysis, hashtag_line, events, culture
     )

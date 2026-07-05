@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from cantonese_post import generate_colloquial_post
 from deepseek_utils import configure_stdio_utf8, has_deepseek_api_key
 from hko_overview import get_hko_overview, print_overview, summarize_overview
+from shatin_culture import fetch_culture_context
 from shatin_events import fetch_shatin_events
 from shatin_weather import analyze_weather, get_shatin_weather, print_weather, weather_fingerprint
 
@@ -89,12 +90,16 @@ def main() -> int:
         n = sum(len(events.get(k) or []) for k in ("today", "week", "month", "notices"))
         print(f"📅 沙田活动：抓取到 {n} 条官方信息\n")
 
+    culture = fetch_culture_context(weather, overview)
+    if not culture.get("skipped"):
+        print(f"📜 沙田文史：已载入 {len(culture.get('snippets') or [])} 条当月素材\n")
+
     state = _load_state()
     stamp = datetime.now(HK_TZ).strftime("%Y-%m-%d_%H%M")
 
     print("🤖 正在生成粵語口語帖文…")
     content = generate_colloquial_post(
-        weather, overview, shatin_analysis, overview_analysis, events
+        weather, overview, shatin_analysis, overview_analysis, events, culture
     )
 
     h = _content_hash(content)
