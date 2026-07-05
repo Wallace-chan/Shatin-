@@ -16,7 +16,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
-from zoneinfo import ZoneInfo
 
 from deepseek_utils import configure_stdio_utf8, has_deepseek_api_key
 from hko_overview import get_hko_overview, print_overview, summarize_overview
@@ -26,6 +25,15 @@ from multilang_post_zh import generate_mandarin_post
 from shatin_culture import fetch_culture_context
 from shatin_events import fetch_shatin_events
 from shatin_weather import analyze_weather, get_shatin_weather, print_weather, weather_fingerprint
+from workflow_schedule import (
+    HK_TZ,
+    github_event_name,
+    output_stamp,
+    run_slot,
+    should_persist_state,
+    slot_key,
+    slot_record_time,
+)
 
 configure_stdio_utf8()
 
@@ -33,7 +41,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "output"
 DATA_DIR = SCRIPT_DIR / "data"
 STATE_FILE = DATA_DIR / "multilang_state.json"
-HK_TZ = ZoneInfo("Asia/Hong_Kong")
+WORKFLOW = "multilang"
 
 LANG_SPECS: Tuple[Tuple[str, str, Callable[..., str]], ...] = (
     ("zh", "普通话", generate_mandarin_post),
@@ -44,8 +52,11 @@ LANG_SPECS: Tuple[Tuple[str, str, Callable[..., str]], ...] = (
 
 def _load_state() -> Dict[str, Any]:
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"last_hashes": {}}
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        state.setdefault("runs", {})
+        state.setdefault("last_hashes", {})
+        return state
+    return {"last_hashes": {}, "runs": {}}
 
 
 def _save_state(state: Dict[str, Any]) -> None:
@@ -101,9 +112,16 @@ def main() -> int:
         print(f"📜 沙田文史：已载入 {len(culture.get('snippets') or [])} 条当月素材\n")
 
     state = _load_state()
-    stamp = datetime.now(HK_TZ).strftime("%Y-%m-%d_%H%M")
+    now = datetime.now(HK_TZ)
+    slot = run_slot(now)
+    key = slot_key(now, slot)
+    record_time = slot_record_time(now, slot, workflow=WORKFLOW)
+    stamp = output_stamp(now, slot, workflow=WORKFLOW)
+    trigger = github_event_name()
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     saved: Dict[str, str] = {}
+    lang_hashes: Dict[str, str] = {}
 
     for code, label, generator in LANG_SPECS:
         print(f"🤖 正在生成 {label} 帖文…")
@@ -115,17 +133,33 @@ def main() -> int:
             )
             path = OUTPUT_DIR / f"post_{stamp}_{code}.txt"
             path.write_text(content, encoding="utf-8")
-            state.setdefault("last_hashes", {})[code] = _content_hash(content)
+            lang_hashes[code] = _content_hash(content)
             saved[code] = path.name
             print(f"✅ 已保存: output/{path.name}\n")
             print(f"--- {label} ---\n{content}\n")
         except Exception as e:
             print(f"❌ {label}: {e}", file=sys.stderr)
 
-    _save_state(state)
+    if should_persist_state():
+        state.setdefault("runs", {})[key] = {
+            "hashes": lang_hashes,
+            "at": record_time.isoformat(),
+            "trigger": trigger,
+            "stamp": stamp,
+        }
+        state.setdefault("last_hashes", {}).update(lang_hashes)
+        _save_state(state)
+    else:
+        print(
+            "ℹ️  手动 Run：已生成帖文（artifact），不更新仓库内 data/multilang_state.json，"
+            "不影响今日排程 slot",
+            file=sys.stderr,
+        )
 
     manifest = {
-        "generated_at_hkt": datetime.now(HK_TZ).isoformat(),
+        "generated_at_hkt": record_time.isoformat(),
+        "trigger": trigger,
+        "slot": slot,
         "languages": [c for c, _, _ in LANG_SPECS],
         "files": saved,
         "weather_fingerprint": weather_fingerprint(weather),

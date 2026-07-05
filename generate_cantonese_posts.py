@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
-from zoneinfo import ZoneInfo
 
 from cantonese_post import generate_colloquial_post
 from deepseek_utils import configure_stdio_utf8, has_deepseek_api_key
@@ -25,6 +23,15 @@ from hko_overview import get_hko_overview, print_overview, summarize_overview
 from shatin_culture import fetch_culture_context
 from shatin_events import fetch_shatin_events
 from shatin_weather import analyze_weather, get_shatin_weather, print_weather, weather_fingerprint
+from workflow_schedule import (
+    HK_TZ,
+    github_event_name,
+    output_stamp,
+    run_slot,
+    should_persist_state,
+    slot_key,
+    slot_record_time,
+)
 
 configure_stdio_utf8()
 
@@ -32,13 +39,15 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "output"
 DATA_DIR = SCRIPT_DIR / "data"
 STATE_FILE = DATA_DIR / "cantonese_state.json"
-HK_TZ = ZoneInfo("Asia/Hong_Kong")
+WORKFLOW = "cantonese"
 
 
 def _load_state() -> Dict[str, Any]:
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"last_hash": None}
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        state.setdefault("runs", {})
+        return state
+    return {"last_hash": None, "runs": {}}
 
 
 def _save_state(state: Dict[str, Any]) -> None:
@@ -95,7 +104,12 @@ def main() -> int:
         print(f"📜 沙田文史：已载入 {len(culture.get('snippets') or [])} 条当月素材\n")
 
     state = _load_state()
-    stamp = datetime.now(HK_TZ).strftime("%Y-%m-%d_%H%M")
+    now = datetime.now(HK_TZ)
+    slot = run_slot(now)
+    key = slot_key(now, slot)
+    record_time = slot_record_time(now, slot, workflow=WORKFLOW)
+    stamp = output_stamp(now, slot, workflow=WORKFLOW)
+    trigger = github_event_name()
 
     print("🤖 正在生成粵語口語帖文…")
     content = generate_colloquial_post(
@@ -103,15 +117,33 @@ def main() -> int:
     )
 
     h = _content_hash(content)
-    if state.get("last_hash") == h:
+    prev_hash = (state.get("runs") or {}).get(key, {}).get("hash")
+    if prev_hash == h:
+        print(f"⚠️  与本次排程 slot（{key}）上次 hash 相同", file=sys.stderr)
+    elif state.get("last_hash") == h:
         print("⚠️  与上次生成内容 hash 相同", file=sys.stderr)
 
     _save_output(content, stamp)
-    state["last_hash"] = h
-    _save_state(state)
+    if should_persist_state():
+        state.setdefault("runs", {})[key] = {
+            "hash": h,
+            "at": record_time.isoformat(),
+            "trigger": trigger,
+            "stamp": stamp,
+        }
+        state["last_hash"] = h
+        _save_state(state)
+    else:
+        print(
+            "ℹ️  手动 Run：已生成帖文（artifact），不更新仓库内 data/cantonese_state.json，"
+            "不影响今日排程 slot",
+            file=sys.stderr,
+        )
 
     manifest = {
-        "generated_at_hkt": datetime.now(HK_TZ).isoformat(),
+        "generated_at_hkt": record_time.isoformat(),
+        "trigger": trigger,
+        "slot": slot,
         "style": "colloquial_cantonese",
         "weather_fingerprint": weather_fingerprint(weather),
         "warnings": [w["label"] for w in overview.get("warnings", [])],

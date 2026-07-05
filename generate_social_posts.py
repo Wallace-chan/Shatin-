@@ -18,7 +18,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from zoneinfo import ZoneInfo
 
 from openai import APIConnectionError, APIError, RateLimitError
 
@@ -43,6 +42,15 @@ from shatin_weather import (
 )
 from shatin_culture import append_culture_section, format_culture_facts, fetch_culture_context
 from shatin_events import append_events_section, format_events_facts, fetch_shatin_events
+from workflow_schedule import (
+    HK_TZ,
+    github_event_name,
+    output_stamp,
+    run_slot,
+    should_persist_state,
+    slot_key,
+    slot_record_time,
+)
 
 configure_stdio_utf8()
 
@@ -50,7 +58,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "output"
 DATA_DIR = SCRIPT_DIR / "data"
 STATE_FILE = DATA_DIR / "social_state.json"
-HK_TZ = ZoneInfo("Asia/Hong_Kong")
+WORKFLOW = "social"
 
 PLATFORMS = ("xiaohongshu", "instagram", "facebook")
 PLATFORM_LABELS = {
@@ -80,37 +88,6 @@ def _save_state(state: Dict[str, Any], *, persist: bool = True) -> None:
         json.dumps(state, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-
-
-SLOT_HKT_TIMES = {"morning": (8, 0), "noon": (12, 0), "evening": (18, 0)}
-
-
-def _run_slot(now: datetime) -> str:
-    """定时三次：morning/noon/evening；手动 Run 单独记为 manual，不占用排程 slot。"""
-    event = os.environ.get("GITHUB_EVENT_NAME", "local")
-    if event == "workflow_dispatch":
-        return "manual"
-    hour = now.hour
-    if hour < 11:
-        return "morning"
-    if hour < 17:
-        return "noon"
-    return "evening"
-
-
-def _slot_record_time(now: datetime, slot: str) -> datetime:
-    """排程任務用設定的 HKT 發佈時間（08:00 / 12:00 / 18:00）記錄 state。"""
-    if slot == "manual":
-        return now
-    hour, minute = SLOT_HKT_TIMES[slot]
-    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-
-def _should_persist_state() -> bool:
-    """GitHub Actions 手动 Run 不写回仓库 state（与 workflow 中 schedule-only commit 一致）。"""
-    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        return False
-    return True
 
 
 def _content_hash(text: str) -> str:
@@ -267,12 +244,14 @@ def _template_content(
         "天氣悶熱，記得飲水 💧" if float(t) >= 28 else "出門留意天氣變化"
     )
 
+    obs_time = weather.get("record_time") or "最新"
+    publish_time = now.strftime("%H:%M")
     body = (
-        f"{emoji} 沙田即時天氣｜{date_str}\n\n"
+        f"{emoji} 沙田即時天氣｜{date_str} {publish_time} HKT\n\n"
         f"【本港】天文台 {hq.get('temperature', '—')}°C｜濕度 {hq.get('humidity', '—')}%\n"
         f"{warning_line}\n"
         f"{forecast_short}\n\n"
-        f"【沙田】自動氣象站實況\n"
+        f"【沙田】自動氣象站實況（觀測 {obs_time}）\n"
         f"氣溫 {t}°C｜濕度 {rh}%｜過去一個鐘雨量 {rain} mm\n"
         f"{wind_label} {wind} km/h｜陣風 {gust} km/h\n\n"
         f"【提示】{advice}\n\n"
@@ -381,9 +360,11 @@ def main() -> int:
 
     state = _load_state()
     now = datetime.now(HK_TZ)
-    slot = _run_slot(now)
-    record_time = _slot_record_time(now, slot)
-    stamp = record_time.strftime("%Y-%m-%d_%H%M")
+    slot = run_slot(now)
+    key = slot_key(now, slot)
+    record_time = slot_record_time(now, slot, workflow=WORKFLOW)
+    stamp = output_stamp(now, slot, workflow=WORKFLOW)
+    trigger = github_event_name()
 
     print("🤖 正在生成 小红书 / Instagram / Facebook 统一帖文…")
     content = generate_unified_post(
@@ -391,36 +372,34 @@ def main() -> int:
     )
 
     h = _content_hash(content)
-    now = datetime.now(HK_TZ)
-    slot = _run_slot(now)
-    slot_key = f"{now:%Y-%m-%d}_{slot}"
-    record_time = _slot_record_time(now, slot)
-    stamp = record_time.strftime("%Y-%m-%d_%H%M")
-    prev_hash = (state.get("runs") or {}).get(slot_key, {}).get("hash")
+    prev_hash = (state.get("runs") or {}).get(key, {}).get("hash")
     if prev_hash == h:
-        print(f"⚠️  与本次排程 slot（{slot_key}）上次 hash 相同", file=sys.stderr)
+        print(f"⚠️  与本次排程 slot（{key}）上次 hash 相同", file=sys.stderr)
     elif state.get("last_hash") == h:
         print("⚠️  与上次生成内容 hash 相同", file=sys.stderr)
 
     _save_output(content, stamp)
-    state.setdefault("runs", {})[slot_key] = {
-        "hash": h,
-        "at": record_time.isoformat(),
-        "trigger": os.environ.get("GITHUB_EVENT_NAME", "local"),
-        "stamp": stamp,
-    }
-    state["last_hash"] = h
-    persist = _should_persist_state()
-    if not persist:
-        print("ℹ️  手动 Run：已生成帖文，但不更新仓库内 data/social_state.json", file=sys.stderr)
-    _save_state(state, persist=persist)
-
-    image_list = _generate_social_images(
-        weather, shatin_analysis, overview, stamp
-    )
+    persist = should_persist_state()
+    if persist:
+        state.setdefault("runs", {})[key] = {
+            "hash": h,
+            "at": record_time.isoformat(),
+            "trigger": trigger,
+            "stamp": stamp,
+        }
+        state["last_hash"] = h
+        _save_state(state, persist=True)
+    else:
+        print(
+            "ℹ️  手动 Run：已生成帖文（artifact），不更新仓库内 data/social_state.json，"
+            "不影响今日排程 slot",
+            file=sys.stderr,
+        )
 
     manifest = {
         "generated_at_hkt": record_time.isoformat(),
+        "trigger": trigger,
+        "slot": slot,
         "platforms": list(PLATFORMS),
         "unified": True,
         "post_file": f"post_{stamp}_social.txt",
