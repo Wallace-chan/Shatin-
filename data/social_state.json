@@ -1,5 +1,5 @@
 {
-  "last_hash": "0d1c59ffb595538d",
+  "last_hash": "022baada33f0e2b0",
   "runs": {
     "2026-06-22_evening": {
       "hash": "6a04dfb65d134788",
@@ -180,6 +180,12 @@
       "at": "2026-07-09T18:00:00+08:00",
       "trigger": "schedule",
       "stamp": "2026-07-09_1800"
+    },
+    "2026-07-10_morning": {
+      "hash": "022baada33f0e2b0",
+      "at": "2026-07-10T08:00:00+08:00",
+      "trigger": "schedule",
+      "stamp": "2026-07-10_0800"
     }
   }
 }
