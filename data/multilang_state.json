@@ -1,8 +1,8 @@
 {
   "last_hashes": {
-    "zh": "bbf554875e9d0679",
-    "en": "18f1b339b31c401e",
-    "ur": "fac5e74506a845fe"
+    "zh": "5c8bb9b742b3fa66",
+    "en": "13b054df8803c9b7",
+    "ur": "5b34b711b4e5e0bc"
   },
   "runs": {
     "2026-07-05_evening": {
@@ -304,6 +304,16 @@
       "at": "2026-07-20T12:10:00+08:00",
       "trigger": "schedule",
       "stamp": "2026-07-20_1210"
+    },
+    "2026-07-20_evening": {
+      "hashes": {
+        "zh": "5c8bb9b742b3fa66",
+        "en": "13b054df8803c9b7",
+        "ur": "5b34b711b4e5e0bc"
+      },
+      "at": "2026-07-20T18:10:00+08:00",
+      "trigger": "schedule",
+      "stamp": "2026-07-20_1810"
     }
   }
 }
